@@ -1,8 +1,10 @@
 import os
 import faiss
+import tempfile
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 from transformers import pipeline
+from database import ChatPDFDatabase
 
 # Load environment variables from .env
 load_dotenv()
@@ -36,6 +38,24 @@ def create_faiss_index(embeddings_array):
     return index
 
 
+# Helper function to save FAISS index to bytes
+def faiss_index_to_bytes(index):
+    with tempfile.NamedTemporaryFile() as temp_file:
+        faiss.write_index(index, temp_file.name)
+        temp_file.seek(0)
+        return temp_file.read()
+
+
+# Helper function to load FAISS index from bytes
+def faiss_index_from_bytes(index_bytes):
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(index_bytes)
+        temp_file.flush()
+        index = faiss.read_index(temp_file.name)
+        os.unlink(temp_file.name)
+        return index
+
+
 # 4. Search for the most relevant chunks
 def search_relevant_chunks(question, embedding_model, index, chunks_list, k=5):
     emb_question = embedding_model.encode([question])
@@ -65,6 +85,9 @@ def extract_text_pdf(pdf_path):
 if __name__ == "__main__":
     import numpy as np
 
+    # Initialize database
+    db = ChatPDFDatabase()
+
     file = input("Enter the book file name (.txt or .pdf): ").strip()
     if file.lower().endswith(".pdf"):
         txt_cache = file[:-4] + ".txt"
@@ -74,38 +97,71 @@ if __name__ == "__main__":
         print("Unsupported file format. Use .txt or .pdf")
         exit(1)
 
-    # Extract text only if necessary
-    if file.lower().endswith(".pdf") and not os.path.exists(txt_cache):
-        print("Extracting text from PDF...")
-        file_text = extract_text_pdf(file)
-        with open(txt_cache, "w", encoding="utf-8") as f:
-            f.write(file_text)
+    # Check if document is already processed in database
+    if db.document_exists(file):
+        print("Loading document from database...")
+        document_id, file_text, chunks = db.get_document_by_filename(file)
     else:
-        with open(txt_cache, "r", encoding="utf-8") as f:
-            file_text = f.read()
+        # Extract text only if necessary
+        if file.lower().endswith(".pdf"):
+            print("Extracting text from PDF...")
+            file_text = extract_text_pdf(file)
+            
+            # Save to temporary txt file for compatibility if needed
+            if not os.path.exists(txt_cache):
+                with open(txt_cache, "w", encoding="utf-8") as f:
+                    f.write(file_text)
+        else:
+            if not os.path.exists(file):
+                print(f"File {file} not found.")
+                exit(1)
+            with open(file, "r", encoding="utf-8") as f:
+                file_text = f.read()
 
-    # Chunks
-    chunks = split_into_chunks(file_text)
-    print(f"Generated chunks: {len(chunks)}")
+        # Generate chunks
+        chunks = split_into_chunks(file_text)
+        print(f"Generated chunks: {len(chunks)}")
+        
+        # Store document in database
+        document_id = db.store_document(file, file_text, chunks)
 
-    # Cache files for embeddings and index
-    emb_cache = txt_cache + ".embeddings.npy"
-    faiss_cache = txt_cache + ".faiss"
+    print(f"Document loaded with {len(chunks)} chunks")
 
     embedding_model_instance = SentenceTransformer("all-MiniLM-L6-v2")
 
-    # If embedding and index files exist, load them
-    if os.path.exists(emb_cache) and os.path.exists(faiss_cache):
-        print("Loading embeddings and FAISS index from cache...")
-        embeddings = np.load(emb_cache)
-        faiss_index = faiss.read_index(faiss_cache)
+    # Check if embeddings and FAISS index exist in database
+    embeddings = db.get_embeddings(document_id)
+    faiss_index_bytes = db.get_faiss_index(document_id)
+
+    if embeddings is not None and faiss_index_bytes is not None:
+        print("Loading embeddings and FAISS index from database...")
+        faiss_index = faiss_index_from_bytes(faiss_index_bytes)
     else:
         print("Generating embeddings and FAISS index...")
-        embeddings = get_embeddings(chunks, embedding_model_instance)
-        embeddings = np.array(embeddings).astype("float32")
-        faiss_index = create_faiss_index(embeddings)
-        np.save(emb_cache, embeddings)
-        faiss.write_index(faiss_index, faiss_cache)
+        
+        # Try to migrate from existing files first
+        if not embeddings and db.migrate_from_files(file):
+            print("Migrated existing file-based data to database...")
+            embeddings = db.get_embeddings(document_id)
+            faiss_index_bytes = db.get_faiss_index(document_id)
+            if faiss_index_bytes:
+                faiss_index = faiss_index_from_bytes(faiss_index_bytes)
+            else:
+                # Generate new index
+                embeddings_array = embeddings.astype("float32")
+                faiss_index = create_faiss_index(embeddings_array)
+                index_bytes = faiss_index_to_bytes(faiss_index)
+                db.store_faiss_index(document_id, index_bytes, embeddings_array.shape[1])
+        else:
+            # Generate new embeddings and index
+            embeddings = get_embeddings(chunks, embedding_model_instance)
+            embeddings = np.array(embeddings).astype("float32")
+            faiss_index = create_faiss_index(embeddings)
+            
+            # Store in database
+            db.store_embeddings(document_id, embeddings)
+            index_bytes = faiss_index_to_bytes(faiss_index)
+            db.store_faiss_index(document_id, index_bytes, embeddings.shape[1])
 
     # Ask question
     question = input("What topic do you want to ask about?: ")

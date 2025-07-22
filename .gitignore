@@ -1,2 +1,21 @@
 .env
 .idea/
+
+# Database files
+*.db
+*.db-journal
+
+# Cache files (legacy file-based storage)
+*.txt.embeddings.npy
+*.txt.faiss
+*.embeddings.npy
+*.faiss
+
+# Test files
+test_*.db
+*_test.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
