@@ -1,8 +1,8 @@
 import os
 import faiss
-import requests
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
+from transformers import pipeline
 
 # Load environment variables from .env
 load_dotenv()
@@ -12,58 +12,44 @@ API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_URL = os.getenv("DEEPSEEK_URL")
 MODEL_NAME = os.getenv("MODEL")
 
-# 1. Read and split the book into chunks
 
+# 1. Read and split the book into chunks
 def split_into_chunks(text, max_words=200):
     words = text.split()
     chunks = []
     for i in range(0, len(words), max_words):
-        chunk = " ".join(words[i:i+max_words])
+        chunk = " ".join(words[i:i + max_words])
         chunks.append(chunk)
     return chunks
 
-# 2. Generate embeddings for each chunk
 
+# 2. Generate embeddings for each chunk
 def get_embeddings(chunks_list, embedding_model):
     return embedding_model.encode(chunks_list, show_progress_bar=True)
 
-# 3. Index embeddings with FAISS
 
+# 3. Index embeddings with FAISS
 def create_faiss_index(embeddings_array):
     dim = embeddings_array.shape[1]
     index = faiss.IndexFlatL2(dim)
     index.add(embeddings_array)
     return index
 
-# 4. Search for the most relevant chunks
 
+# 4. Search for the most relevant chunks
 def search_relevant_chunks(question, embedding_model, index, chunks_list, k=5):
     emb_question = embedding_model.encode([question])
     D, I = index.search(emb_question, k)
     return [chunks_list[i] for i in I[0]]
 
-# 5. Build prompt and query DeepSeek
 
-def query_deepseek(context, question):
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {API_KEY}"
-    }
-    prompt = f"Context:\n{context}\n\nQuestion: {question}"
-    data = {
-        "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": "You are a professional assistant and can only respond using the provided context."},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": False
-    }
-    response = requests.post(DEEPSEEK_URL, headers=headers, json=data)
-    if response.status_code == 200:
-        result = response.json()
-        return result['choices'][0]['message']['content']
-    else:
-        return f"Error: {response.status_code}"
+# 5. Build prompt and query local model
+def query_local_qa(context, question, qa_pipeline=None):
+    if qa_pipeline is None:
+        qa_pipeline = pipeline("question-answering", model="deepset/roberta-base-squad2")
+    result = qa_pipeline(question=question, context=context)
+    return result["answer"]
+
 
 # Example usage with PDF or TXT support
 def extract_text_pdf(pdf_path):
@@ -75,8 +61,10 @@ def extract_text_pdf(pdf_path):
             extracted_text += "\n"
     return extracted_text
 
+
 if __name__ == "__main__":
     import numpy as np
+
     file = input("Enter the book file name (.txt or .pdf): ").strip()
     if file.lower().endswith(".pdf"):
         txt_cache = file[:-4] + ".txt"
@@ -121,7 +109,24 @@ if __name__ == "__main__":
 
     # Ask question
     question = input("What topic do you want to ask about?: ")
-    relevant_chunks = search_relevant_chunks(question, embedding_model_instance, faiss_index, chunks, k=5)
+    relevant_chunks = search_relevant_chunks(question, embedding_model_instance, faiss_index, chunks, k=20)
     context = "\n".join(relevant_chunks)
-    answer = query_deepseek(context, question)
-    print("\nDeepSeek's Answer:\n", answer)
+    print("Running local QA model...")
+    qa_pipeline = pipeline("question-answering", model="deepset/roberta-base-squad2")
+    answer = query_local_qa(context, question, qa_pipeline)
+    # Search for the full sentence containing the answer
+    import re
+
+
+    def find_full_sentence(context, answer):
+        # Search for the sentence containing the answer
+        pattern = r'([^.\n]*?\b' + re.escape(answer) + r'\b[^.\n]*[.\n])'
+        matches = re.findall(pattern, context, flags=re.IGNORECASE)
+        if matches:
+            # Show the longest sentence found
+            return max(matches, key=len).strip()
+        return answer
+
+
+    enriched = find_full_sentence(context, answer)
+    print("\nLocal Model's Answer (enriched):\n", enriched)

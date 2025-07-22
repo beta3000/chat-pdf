@@ -62,3 +62,38 @@ MODEL=deepseek-reasoner
 
 ## License
 MIT
+
+El script ahora utiliza un modelo local ligero de HuggingFace (`distilbert-base-uncased-distilled-squad`) para responder preguntas, sin necesidad de conexión a internet ni claves API.
+
+## Uso
+
+```bash
+python chat-pdf.py
+```
+
+Se te pedirá:
+```
+Enter the book file name (.txt or .pdf): taxes.pdf
+```
+Si es la primera vez, el script extraerá el texto y generará los embeddings y el índice (esto puede tardar para archivos grandes).
+
+Luego:
+```
+What topic do you want to ask about?:
+```
+Escribe tu pregunta, por ejemplo:
+```
+What are the best algorithms to segment taxpayers?
+```
+El script devolverá una respuesta basada únicamente en las partes más relevantes del documento usando el modelo local.
+
+## Variables de entorno
+Ya no es necesario configurar variables de entorno para DeepSeek. Puedes eliminar o ignorar las siguientes líneas en tu `.env`:
+```
+DEEPSEEK_API_KEY=your_api_key_here
+DEEPSEEK_URL=https://api.deepseek.com/chat/completions
+MODEL=deepseek-reasoner
+```
+
+## Nota sobre advertencias en Windows
+Si ves una advertencia sobre symlinks al usar HuggingFace en Windows, puedes ignorarla. Si quieres evitarla, activa el modo desarrollador de Windows o ejecuta Python como administrador. Más información: https://huggingface.co/docs/huggingface_hub/how-to-cache#limitations
