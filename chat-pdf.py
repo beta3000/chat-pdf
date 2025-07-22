@@ -4,56 +4,56 @@ import requests
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 
-# Cargar variables de entorno desde .env
+# Load environment variables from .env
 load_dotenv()
 
-# Configuración
+# Configuration
 API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_URL = os.getenv("DEEPSEEK_URL")
-MODEL = os.getenv("MODEL")
+MODEL_NAME = os.getenv("MODEL")
 
-# 1. Leer y dividir el libro en fragmentos
+# 1. Read and split the book into chunks
 
-def dividir_en_fragmentos(texto, max_palabras=200):
-    palabras = texto.split()
-    fragmentos = []
-    for i in range(0, len(palabras), max_palabras):
-        fragmento = " ".join(palabras[i:i+max_palabras])
-        fragmentos.append(fragmento)
-    return fragmentos
+def split_into_chunks(text, max_words=200):
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), max_words):
+        chunk = " ".join(words[i:i+max_words])
+        chunks.append(chunk)
+    return chunks
 
-# 2. Generar embeddings para cada fragmento
+# 2. Generate embeddings for each chunk
 
-def obtener_embeddings(fragmentos, modelo_emb):
-    return modelo_emb.encode(fragmentos, show_progress_bar=True)
+def get_embeddings(chunks_list, embedding_model):
+    return embedding_model.encode(chunks_list, show_progress_bar=True)
 
-# 3. Indexar los embeddings con FAISS
+# 3. Index embeddings with FAISS
 
-def crear_indice_faiss(embeddings):
-    dim = embeddings.shape[1]
+def create_faiss_index(embeddings_array):
+    dim = embeddings_array.shape[1]
     index = faiss.IndexFlatL2(dim)
-    index.add(embeddings)
+    index.add(embeddings_array)
     return index
 
-# 4. Buscar los fragmentos más relevantes
+# 4. Search for the most relevant chunks
 
-def buscar_fragmentos(pregunta, modelo_emb, index, fragmentos, k=5):
-    emb_pregunta = modelo_emb.encode([pregunta])
-    D, I = index.search(emb_pregunta, k)
-    return [fragmentos[i] for i in I[0]]
+def search_relevant_chunks(question, embedding_model, index, chunks_list, k=5):
+    emb_question = embedding_model.encode([question])
+    D, I = index.search(emb_question, k)
+    return [chunks_list[i] for i in I[0]]
 
-# 5. Construir prompt y consultar DeepSeek
+# 5. Build prompt and query DeepSeek
 
-def consultar_deepseek(contexto, pregunta):
+def query_deepseek(context, question):
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {API_KEY}"
     }
-    prompt = f"Contexto:\n{contexto}\n\nPregunta: {pregunta}"
+    prompt = f"Context:\n{context}\n\nQuestion: {question}"
     data = {
-        "model": MODEL,
+        "model": MODEL_NAME,
         "messages": [
-            {"role": "system", "content": "Eres un asistente profesional y solo puedes responder usando el contexto proporcionado."},
+            {"role": "system", "content": "You are a professional assistant and can only respond using the provided context."},
             {"role": "user", "content": prompt}
         ],
         "stream": False
@@ -65,63 +65,63 @@ def consultar_deepseek(contexto, pregunta):
     else:
         return f"Error: {response.status_code}"
 
-# Ejemplo de uso con soporte para PDF o TXT
-def extraer_texto_pdf(ruta_pdf):
+# Example usage with PDF or TXT support
+def extract_text_pdf(pdf_path):
     import pdfplumber
-    texto = ""
-    with pdfplumber.open(ruta_pdf) as pdf:
-        for pagina in pdf.pages:
-            texto += pagina.extract_text() or ""
-            texto += "\n"
-    return texto
+    extracted_text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            extracted_text += page.extract_text() or ""
+            extracted_text += "\n"
+    return extracted_text
 
 if __name__ == "__main__":
     import numpy as np
-    archivo = input("Nombre del archivo del libro (.txt o .pdf): ").strip()
-    if archivo.lower().endswith(".pdf"):
-        txt_cache = archivo[:-4] + ".txt"
-    elif archivo.lower().endswith(".txt"):
-        txt_cache = archivo
+    file = input("Enter the book file name (.txt or .pdf): ").strip()
+    if file.lower().endswith(".pdf"):
+        txt_cache = file[:-4] + ".txt"
+    elif file.lower().endswith(".txt"):
+        txt_cache = file
     else:
-        print("Formato de archivo no soportado. Usa .txt o .pdf")
+        print("Unsupported file format. Use .txt or .pdf")
         exit(1)
 
-    # Extraer texto solo si es necesario
-    if archivo.lower().endswith(".pdf") and not os.path.exists(txt_cache):
-        print("Extrayendo texto del PDF...")
-        texto = extraer_texto_pdf(archivo)
+    # Extract text only if necessary
+    if file.lower().endswith(".pdf") and not os.path.exists(txt_cache):
+        print("Extracting text from PDF...")
+        file_text = extract_text_pdf(file)
         with open(txt_cache, "w", encoding="utf-8") as f:
-            f.write(texto)
+            f.write(file_text)
     else:
         with open(txt_cache, "r", encoding="utf-8") as f:
-            texto = f.read()
+            file_text = f.read()
 
-    # Fragmentos
-    fragmentos = dividir_en_fragmentos(texto)
-    print(f"Fragmentos generados: {len(fragmentos)}")
+    # Chunks
+    chunks = split_into_chunks(file_text)
+    print(f"Generated chunks: {len(chunks)}")
 
-    # Archivos de cache para embeddings e índice
+    # Cache files for embeddings and index
     emb_cache = txt_cache + ".embeddings.npy"
     faiss_cache = txt_cache + ".faiss"
 
-    modelo_emb = SentenceTransformer("all-MiniLM-L6-v2")
+    embedding_model_instance = SentenceTransformer("all-MiniLM-L6-v2")
 
-    # Si existen los archivos de embeddings e índice, cargarlos
+    # If embedding and index files exist, load them
     if os.path.exists(emb_cache) and os.path.exists(faiss_cache):
-        print("Cargando embeddings e índice FAISS desde cache...")
+        print("Loading embeddings and FAISS index from cache...")
         embeddings = np.load(emb_cache)
-        index = faiss.read_index(faiss_cache)
+        faiss_index = faiss.read_index(faiss_cache)
     else:
-        print("Generando embeddings e índice FAISS...")
-        embeddings = obtener_embeddings(fragmentos, modelo_emb)
+        print("Generating embeddings and FAISS index...")
+        embeddings = get_embeddings(chunks, embedding_model_instance)
         embeddings = np.array(embeddings).astype("float32")
-        index = crear_indice_faiss(embeddings)
+        faiss_index = create_faiss_index(embeddings)
         np.save(emb_cache, embeddings)
-        faiss.write_index(index, faiss_cache)
+        faiss.write_index(faiss_index, faiss_cache)
 
-    # Preguntar
-    pregunta = input("¿Sobre qué tema quieres preguntar?: ")
-    fragmentos_relevantes = buscar_fragmentos(pregunta, modelo_emb, index, fragmentos, k=5)
-    contexto = "\n".join(fragmentos_relevantes)
-    respuesta = consultar_deepseek(contexto, pregunta)
-    print("\nRespuesta de DeepSeek:\n", respuesta)
+    # Ask question
+    question = input("What topic do you want to ask about?: ")
+    relevant_chunks = search_relevant_chunks(question, embedding_model_instance, faiss_index, chunks, k=5)
+    context = "\n".join(relevant_chunks)
+    answer = query_deepseek(context, question)
+    print("\nDeepSeek's Answer:\n", answer)
